@@ -1,13 +1,5 @@
---[[
-    NEON EXECUTOR - A premium Roblox Lua Executor UI
-    Built with Love2D for Arch Linux + Hyprland/Wayland
-    Author: Neon Executor Project
-    Version: 1.0.0
---]]
+using VelocityAPI;
 
--- ============================================================
--- THEME SYSTEM
--- ============================================================
 local theme = {
     -- Background layers
     bg_deep      = {0.04, 0.04, 0.06, 1},       -- #0A0A0F

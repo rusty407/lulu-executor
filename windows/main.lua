@@ -1,221 +1,397 @@
--- NEON EXECUTOR - Roblox Edition
--- Paste into StarterGui > LocalScript
+local utf8 = require("utf8")
 
-local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
-local UserInputService = game:GetService("UserInputService")
+-- ==================== CONFIG & STATE ====================
+local WINDOW_W, WINDOW_H = love.graphics.getDimensions()
 
-local player = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
+local THEME = {
+    bg = {10/255, 10/255, 15/255, 1},
+    panel = {20/255, 20/255, 30/255, 1},
+    panel2 = {15/255, 15/255, 25/255, 1},
+    accent_cyan = {0/255, 255/255, 255/255, 1},
+    accent_green = {0/255, 255/255, 100/255, 1},
+    accent_purple = {180/255, 0/255, 255/255, 1},
+    text = {230/255, 230/255, 235/255, 1},
+    text_dim = {160/255, 160/255, 170/255, 1},
+    success = {0/255, 255/255, 120/255, 1},
+    error = {255/255, 80/255, 80/255, 1},
+}
 
--- Create ScreenGui
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "NeonExecutor"
-screenGui.ResetOnSpawn = false
-screenGui.Parent = playerGui
+local STATE = {
+    velocityState = "NotAttached", -- NotAttached | Attaching | Attached | Executed | Error
+    statusText = "Status: Not Attached",
+    statusColor = THEME.text_dim,
+    consoleLogs = {},
+    tabs = {
+        {name = "script1.lua", content = "-- Welcome to Velocity Neon\nprint(\"Hello from Neon Executor!\")", cursorX = 1, cursorY = 1, scrollY = 0, modified = false}
+    },
+    activeTab = 1,
+    cursorBlink = 0,
+    showFindReplace = false,
+    findText = "",
+    replaceText = "",
+}
 
-local mainFrame = Instance.new("Frame")
-mainFrame.Name = "Main"
-mainFrame.Size = UDim2.new(0, 920, 0, 620)
-mainFrame.Position = UDim2.new(0.5, -460, 0.5, -310)
-mainFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 15)
-mainFrame.BorderSizePixel = 0
-mainFrame.Parent = screenGui
+local FONT = love.graphics.newFont("fonts/consola.ttf", 16) -- Assume user places a monospace font or fallback
+if not love.filesystem.getInfo("fonts/consola.ttf") then
+    FONT = love.graphics.newFont(16) -- system fallback
+end
+love.graphics.setFont(FONT)
 
-local uiCorner = Instance.new("UICorner")
-uiCorner.CornerRadius = UDim.new(0, 12)
-uiCorner.Parent = mainFrame
+local LINE_HEIGHT = 22
+local EDITOR_PADDING = 20
+local SCROLLBAR_WIDTH = 12
 
-local uiStroke = Instance.new("UIStroke")
-uiStroke.Color = Color3.fromRGB(0, 255, 200)
-uiStroke.Thickness = 1.5
-uiStroke.Transparency = 0.7
-uiStroke.Parent = mainFrame
-
--- Title Bar
-local titleBar = Instance.new("Frame")
-titleBar.Size = UDim2.new(1, 0, 0, 50)
-titleBar.BackgroundColor3 = Color3.fromRGB(15, 15, 25)
-titleBar.BorderSizePixel = 0
-titleBar.Parent = mainFrame
-
-Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 12)
-
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(0.4, 0, 1, 0)
-title.BackgroundTransparency = 1
-title.Text = "NEON EXECUTOR"
-title.TextColor3 = Color3.fromRGB(0, 255, 200)
-title.TextScaled = true
-title.Font = Enum.Font.GothamBold
-title.Parent = titleBar
-
--- Buttons
-local function createButton(text, pos, color)
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0, 110, 0, 32)
-    btn.Position = pos
-    btn.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
-    btn.Text = text
-    btn.TextColor3 = color
-    btn.Font = Enum.Font.GothamSemibold
-    btn.TextSize = 14
-    btn.Parent = titleBar
-
-    local corner = Instance.new("UICorner", btn)
-    corner.CornerRadius = UDim.new(0, 8)
-
-    local stroke = Instance.new("UIStroke", btn)
-    stroke.Color = color
-    stroke.Transparency = 0.6
-
-    btn.MouseEnter:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(40, 40, 55)}):Play()
-    end)
-    btn.MouseLeave:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(20, 20, 30)}):Play()
-    end)
-
-    return btn
+-- Button helper
+local function createButton(x, y, w, h, text, color)
+    return {x=x, y=y, w=w, h=h, text=text, baseColor=color or THEME.accent_cyan, hover=false}
 end
 
-local executeBtn = createButton("▶ EXECUTE", UDim2.new(1, -280, 0.5, -16), Color3.fromRGB(0, 255, 140))
-local injectBtn = createButton("⚡ INJECT", UDim2.new(1, -160, 0.5, -16), Color3.fromRGB(255, 100, 50))
+local buttons = {
+    attach = createButton(40, 40, 160, 50, "⚡ ATTACH", THEME.accent_green),
+    execute = createButton(220, 40, 120, 50, "Execute", THEME.accent_purple),
+    newTab = createButton(1280-180, 15, 40, 30, "+", THEME.accent_cyan),
+}
 
--- Code Editor
-local editorFrame = Instance.new("Frame")
-editorFrame.Size = UDim2.new(1, -20, 0.65, -70)
-editorFrame.Position = UDim2.new(0, 10, 0, 60)
-editorFrame.BackgroundColor3 = Color3.fromRGB(13, 13, 20)
-editorFrame.Parent = mainFrame
-
-Instance.new("UICorner", editorFrame).CornerRadius = UDim.new(0, 10)
-
-local codeBox = Instance.new("TextBox")
-codeBox.Size = UDim2.new(1, -60, 1, -10)
-codeBox.Position = UDim2.new(0, 55, 0, 5)
-codeBox.BackgroundTransparency = 1
-codeBox.Text = '-- Welcome to NEON EXECUTOR\nprint("Hello from Neon!")'
-codeBox.TextColor3 = Color3.fromRGB(220, 220, 230)
-codeBox.TextXAlignment = Enum.TextXAlignment.Left
-codeBox.TextYAlignment = Enum.TextYAlignment.Top
-codeBox.TextWrapped = true
-codeBox.ClearTextOnFocus = false
-codeBox.MultiLine = true
-codeBox.Font = Enum.Font.Code
-codeBox.TextSize = 15
-codeBox.Parent = editorFrame
-
--- Line Numbers
-local lineNumbers = Instance.new("TextLabel")
-lineNumbers.Size = UDim2.new(0, 45, 1, -10)
-lineNumbers.Position = UDim2.new(0, 8, 0, 5)
-lineNumbers.BackgroundTransparency = 1
-lineNumbers.Text = "1\n2\n3"
-lineNumbers.TextColor3 = Color3.fromRGB(100, 100, 120)
-lineNumbers.TextYAlignment = Enum.TextYAlignment.Top
-lineNumbers.TextXAlignment = Enum.TextXAlignment.Right
-lineNumbers.Font = Enum.Font.Code
-lineNumbers.TextSize = 15
-lineNumbers.Parent = editorFrame
-
--- Console
-local consoleFrame = Instance.new("Frame")
-consoleFrame.Size = UDim2.new(1, -20, 0.28, -10)
-consoleFrame.Position = UDim2.new(0, 10, 0.72, 0)
-consoleFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 15)
-consoleFrame.Parent = mainFrame
-
-Instance.new("UICorner", consoleFrame).CornerRadius = UDim.new(0, 10)
-
-local consoleLog = Instance.new("ScrollingFrame")
-consoleLog.Size = UDim2.new(1, -10, 1, -10)
-consoleLog.Position = UDim2.new(0, 5, 0, 5)
-consoleLog.BackgroundTransparency = 1
-consoleLog.ScrollBarThickness = 6
-consoleLog.Parent = consoleFrame
-
-local consoleLayout = Instance.new("UIListLayout", consoleLog)
-consoleLayout.SortOrder = Enum.SortOrder.LayoutOrder
-consoleLayout.Padding = UDim.new(0, 2)
-
-local function log(text, color)
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -10, 0, 20)
-    label.BackgroundTransparency = 1
-    label.Text = text
-    label.TextColor3 = color or Color3.fromRGB(180, 180, 190)
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Font = Enum.Font.Code
-    label.TextSize = 14
-    label.TextWrapped = true
-    label.Parent = consoleLog
-    consoleLog.CanvasPosition = Vector2.new(0, consoleLog.AbsoluteCanvasSize.Y)
+-- ==================== HELPER FUNCTIONS ====================
+local function logConsole(msg, level)
+    level = level or "info"
+    table.insert(STATE.consoleLogs, {text = os.date("%H:%M:%S") .. " | " .. msg, level = level})
+    if #STATE.consoleLogs > 200 then table.remove(STATE.consoleLogs, 1) end
 end
 
-log("NEON EXECUTOR initialized.", Color3.fromRGB(0, 255, 200))
-log("Ready. Press Execute or Ctrl+Enter.", Color3.fromRGB(100, 200, 255))
+local function getActiveEditor()
+    return STATE.tabs[STATE.activeTab]
+end
 
--- Execute Function
-local function executeCode()
-    local code = codeBox.Text
-    log("Executing script...", Color3.fromRGB(0, 255, 140))
+local function splitLines(text)
+    local lines = {}
+    for s in text:gmatch("[^\r\n]+") do
+        table.insert(lines, s)
+    end
+    if text:sub(-1) == "\n" then table.insert(lines, "") end
+    return lines
+end
 
+local function getLine(editor, n)
+    local lines = splitLines(editor.content)
+    return lines[n] or ""
+end
+
+-- Base64 helper for Velocity pipe (Windows Named Pipe integration)
+local function base64_encode(data)
+    local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+    return ((data:gsub('.', function(x)
+        local r, s = '', x:byte()
+        for i=8,1,-1 do r = r .. (s % 2^i - s % 2^(i-1) > 0 and '1' or '0') end
+        return r
+    end)..'0000'):gsub('%d%d%d?%d?%d?%d?', function(x)
+        if (#x < 6) then return '' end
+        local c = 0
+        for i=1,6 do c = c + (x:sub(i,i)=='1' and 2^(6-i) or 0) end
+        return b:sub(c+1,c+1)
+    end):gsub('..$', function(x)
+        if #x == 2 then return b:sub(x:byte(1)-47)..b:sub(x:byte(2)-47)..'==' end
+        return b:sub(x:byte(1)-47)..'==='
+    end))
+end
+
+-- ==================== VELOCITY PIPE INTEGRATION ====================
+--[[
+    PRODUCTION INTEGRATION NOTE:
+    In a real deployment, replace the local loadstring with a pipe write:
+
+    local pipeName = "\\\\.\\pipe\\uoQcySKXSUxxJNpVQyatpHQwYoGfhcbh_" .. tostring(love.system.getPID() or 1234)
+    -- Use ffi (luajit) or external DLL bridge to WriteFile on Named Pipe
+    -- Example pseudocode:
+    -- local encoded = base64_encode(editor.content)
+    -- Write to pipe: "EXECUTE:" .. encoded
+    -- Velocity backend (C# .NET 8) listens on this pipe and injects into target process.
+
+    Folders expected by Velocity: /Scripts, /Workspace, /AutoExec
+    Save files via love.filesystem.write("Scripts/neon_script.lua", content)
+--]]
+local function sendToVelocity(editor)
+    logConsole("Sending script to Velocity backend...", "info")
+
+    -- Local testing fallback
     local success, err = pcall(function()
-        loadstring(code)()
+        local chunk, loadErr = loadstring(editor.content)
+        if chunk then
+            chunk()
+            STATE.velocityState = "Executed"
+            logConsole("Script executed successfully (local test)", "success")
+        else
+            error(loadErr)
+        end
     end)
 
-    if success then
-        log("Executed successfully.", Color3.fromRGB(0, 255, 140))
-    else
-        log("[ERROR] " .. tostring(err), Color3.fromRGB(255, 80, 80))
+    if not success then
+        STATE.velocityState = "Error"
+        logConsole("Execution error: " .. tostring(err), "error")
+    end
+
+    -- Real pipe would go here (commented)
+    --[[
+    local encoded = base64_encode(editor.content)
+    -- ffi.C or external bridge: write to named pipe
+    logConsole("Script delivered via Named Pipe (Base64)", "success")
+    --]]
+end
+
+-- ==================== DRAWING ====================
+local function drawNeonRect(x, y, w, h, color, thickness)
+    love.graphics.setColor(color[1], color[2], color[3], 0.15)
+    love.graphics.rectangle("fill", x, y, w, h, 8, 8)
+    love.graphics.setColor(color)
+    love.graphics.setLineWidth(thickness or 2)
+    love.graphics.rectangle("line", x, y, w, h, 8, 8)
+end
+
+local function drawEditor()
+    local editor = getActiveEditor()
+    local lines = splitLines(editor.content)
+    local visibleLines = math.floor((WINDOW_H - 280) / LINE_HEIGHT)
+
+    -- Background
+    love.graphics.setColor(THEME.panel)
+    love.graphics.rectangle("fill", 40, 120, WINDOW_W - 80, WINDOW_H - 280, 8, 8)
+
+    -- Line numbers rail
+    love.graphics.setColor(0.08, 0.08, 0.12, 1)
+    love.graphics.rectangle("fill", 40, 120, 50, WINDOW_H - 280)
+
+    love.graphics.setScissor(40, 120, WINDOW_W - 80, WINDOW_H - 280)
+
+    -- Lines
+    for i = 1, #lines do
+        local y = 130 + (i - 1 - editor.scrollY) * LINE_HEIGHT
+        if y < 120 or y > WINDOW_H - 160 then goto continue end
+
+        -- Current line highlight
+        if i == editor.cursorY then
+            love.graphics.setColor(0.15, 0.25, 0.35, 0.6)
+            love.graphics.rectangle("fill", 40, y - 2, WINDOW_W - 100, LINE_HEIGHT)
+            -- Left accent rail
+            love.graphics.setColor(THEME.accent_cyan)
+            love.graphics.rectangle("fill", 42, y - 2, 4, LINE_HEIGHT)
+        end
+
+        -- Line number
+        love.graphics.setColor(THEME.text_dim)
+        love.graphics.print(string.format("%3d", i), 48, y)
+
+        -- Code
+        love.graphics.setColor(THEME.text)
+        love.graphics.print(lines[i] or "", 100, y)
+
+        ::continue::
+    end
+
+    love.graphics.setScissor()
+
+    -- Cursor
+    STATE.cursorBlink = STATE.cursorBlink + love.timer.getDelta()
+    if math.floor(STATE.cursorBlink * 2) % 2 == 0 then
+        local cursorLine = getLine(editor, editor.cursorY)
+        local cursorStr = cursorLine:sub(1, editor.cursorX - 1)
+        local cursorPx = 100 + FONT:getWidth(cursorStr)
+        local cy = 130 + (editor.cursorY - 1 - editor.scrollY) * LINE_HEIGHT
+
+        love.graphics.setColor(THEME.accent_cyan)
+        love.graphics.setLineWidth(2)
+        love.graphics.line(cursorPx, cy, cursorPx, cy + LINE_HEIGHT - 4)
+
+        -- Top nub
+        love.graphics.rectangle("fill", cursorPx - 3, cy - 4, 7, 4)
+    end
+
+    -- Scrollbar
+    if #lines > visibleLines then
+        local scrollH = (WINDOW_H - 280) * (visibleLines / #lines)
+        local scrollY = 120 + (editor.scrollY / (#lines - visibleLines)) * (WINDOW_H - 280 - scrollH)
+        drawNeonRect(WINDOW_W - 60, scrollY, SCROLLBAR_WIDTH, scrollH, THEME.accent_cyan, 1)
     end
 end
 
-executeBtn.MouseButton1Click:Connect(executeCode)
-injectBtn.MouseButton1Click:Connect(function()
-    log("Inject simulated (Roblox executor style)", Color3.fromRGB(255, 160, 50))
-end)
-
--- Ctrl + Enter support
-UserInputService.InputBegan:Connect(function(input, gpe)
-    if gpe then return end
-    if input.KeyCode == Enum.KeyCode.Return and UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
-        executeCode()
+local function drawTabs()
+    for i, tab in ipairs(STATE.tabs) do
+        local x = 40 + (i-1) * 160
+        local active = i == STATE.activeTab
+        love.graphics.setColor(active and THEME.panel or THEME.panel2)
+        love.graphics.rectangle("fill", x, 80, 150, 35, 6, 6)
+        love.graphics.setColor(active and THEME.accent_cyan or THEME.text_dim)
+        love.graphics.print(tab.name .. (tab.modified and " •" or ""), x + 12, 88)
     end
-end)
+end
 
--- Auto update line numbers
-codeBox:GetPropertyChangedSignal("Text"):Connect(function()
-    local lines = #codeBox.Text:split("\n")
-    local numText = ""
-    for i = 1, lines do
-        numText = numText .. i .. "\n"
+local function drawConsole()
+    love.graphics.setColor(THEME.panel2)
+    love.graphics.rectangle("fill", 40, WINDOW_H - 160, WINDOW_W - 80, 140, 8, 8)
+
+    love.graphics.setColor(THEME.text_dim)
+    love.graphics.print("CONSOLE", 55, WINDOW_H - 155)
+
+    love.graphics.setScissor(40, WINDOW_H - 135, WINDOW_W - 90, 110)
+    for i, log in ipairs(STATE.consoleLogs) do
+        local y = WINDOW_H - 135 + (i-1) * 18
+        if y > WINDOW_H - 30 then break end
+        local col = log.level == "error" and THEME.error or (log.level == "success" and THEME.success or THEME.text)
+        love.graphics.setColor(col)
+        love.graphics.print(log.text, 55, y)
     end
-    lineNumbers.Text = numText
-end)
+    love.graphics.setScissor()
+end
 
--- Draggable
-local dragging, dragInput, dragStart, startPos
-titleBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = true
-        dragStart = input.Position
-        startPos = mainFrame.Position
+local function drawStatusBar()
+    local statusColor = STATE.velocityState == "Attached" and THEME.success or
+                       (STATE.velocityState == "Error" and THEME.error or THEME.text_dim)
+
+    love.graphics.setColor(THEME.panel)
+    love.graphics.rectangle("fill", 0, WINDOW_H - 20, WINDOW_W, 20)
+    love.graphics.setColor(statusColor)
+    love.graphics.print(STATE.statusText, 20, WINDOW_H - 18)
+
+    love.graphics.setColor(THEME.text_dim)
+    love.graphics.print("Velocity Neon Executor • Ctrl+Enter to Execute", WINDOW_W - 420, WINDOW_H - 18)
+end
+
+-- ==================== UPDATE & INPUT ====================
+function love.update(dt)
+    WINDOW_W, WINDOW_H = love.graphics.getDimensions()
+
+    -- Button hover
+    local mx, my = love.mouse.getPosition()
+    for _, btn in pairs(buttons) do
+        btn.hover = mx > btn.x and mx < btn.x + btn.w and my > btn.y and my < btn.y + btn.h
     end
-end)
 
-titleBar.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = false
+    -- Attach animation simulation
+    if STATE.velocityState == "Attaching" then
+        if love.timer.getTime() % 1.2 < 0.6 then
+            STATE.statusText = "Status: Attaching..."
+        else
+            STATE.statusText = "Status: Injecting..."
+        end
     end
-end)
+end
 
-UserInputService.InputChanged:Connect(function(input)
-    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-        local delta = input.Position - dragStart
-        mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+function love.draw()
+    love.graphics.clear(THEME.bg)
+
+    -- Background grid effect (subtle)
+    love.graphics.setColor(0.05, 0.05, 0.08, 0.6)
+    for x = 0, WINDOW_W, 40 do love.graphics.line(x, 0, x, WINDOW_H) end
+    for y = 0, WINDOW_H, 40 do love.graphics.line(0, y, WINDOW_W, y) end
+
+    drawTabs()
+    drawEditor()
+    drawConsole()
+    drawStatusBar()
+
+    -- Buttons
+    for name, btn in pairs(buttons) do
+        local col = btn.hover and {btn.baseColor[1]*1.3, btn.baseColor[2]*1.3, btn.baseColor[3]*1.3, 1} or btn.baseColor
+        drawNeonRect(btn.x, btn.y, btn.w, btn.h, col, 3)
+        love.graphics.setColor(1,1,1,1)
+        love.graphics.print(btn.text, btn.x + (btn.w - FONT:getWidth(btn.text))/2, btn.y + 14)
     end
-end)
 
-print("NEON EXECUTOR loaded successfully!")
+    if STATE.showFindReplace then
+        love.graphics.setColor(THEME.panel)
+        love.graphics.rectangle("fill", WINDOW_W/2 - 200, 80, 400, 120, 8, 8)
+        love.graphics.setColor(THEME.accent_cyan)
+        love.graphics.print("Find / Replace", WINDOW_W/2 - 80, 90)
+        -- Simplified - would have input fields in full version
+    end
+end
+
+function love.textinput(t)
+    local editor = getActiveEditor()
+    local line = getLine(editor, editor.cursorY)
+    editor.content = editor.content:sub(1, editor.cursorX - 1) .. t .. editor.content:sub(editor.cursorX)
+    editor.cursorX = editor.cursorX + utf8.len(t)
+    editor.modified = true
+end
+
+function love.keypressed(key)
+    local editor = getActiveEditor()
+
+    if key == "return" then
+        -- Auto indent simulation
+        local prevLine = getLine(editor, editor.cursorY)
+        local indent = prevLine:match("^(%s*)") or ""
+        editor.content = editor.content .. "\n" .. indent
+        editor.cursorY = editor.cursorY + 1
+        editor.cursorX = #indent + 1
+        editor.modified = true
+    elseif key == "backspace" then
+        -- Basic backspace handling (full impl would be more robust)
+        if editor.cursorX > 1 then
+            editor.content = editor.content:sub(1, editor.cursorX - 2) .. editor.content:sub(editor.cursorX)
+            editor.cursorX = editor.cursorX - 1
+        elseif editor.cursorY > 1 then
+            -- Join lines (simplified)
+        end
+        editor.modified = true
+    elseif key == "left" then
+        editor.cursorX = math.max(1, editor.cursorX - 1)
+    elseif key == "right" then
+        editor.cursorX = editor.cursorX + 1
+    elseif key == "up" then
+        editor.cursorY = math.max(1, editor.cursorY - 1)
+        editor.cursorX = math.min(editor.cursorX, #getLine(editor, editor.cursorY) + 1)
+    elseif key == "down" then
+        editor.cursorY = editor.cursorY + 1
+        editor.cursorX = math.min(editor.cursorX, #getLine(editor, editor.cursorY) + 1)
+    elseif key == "tab" then
+        editor.content = editor.content:sub(1, editor.cursorX - 1) .. "    " .. editor.content:sub(editor.cursorX)
+        editor.cursorX = editor.cursorX + 4
+        editor.modified = true
+    end
+
+    -- Scrolling
+    local visible = math.floor((WINDOW_H - 280) / LINE_HEIGHT)
+    if editor.cursorY - editor.scrollY > visible - 2 then
+        editor.scrollY = editor.cursorY - visible + 2
+    elseif editor.cursorY - editor.scrollY < 2 then
+        editor.scrollY = math.max(0, editor.cursorY - 2)
+    end
+end
+
+function love.wheelmoved(x, y)
+    local editor = getActiveEditor()
+    editor.scrollY = math.max(0, editor.scrollY - y * 3)
+end
+
+function love.mousepressed(mx, my, button)
+    if button ~= 1 then return end
+
+    -- Attach button
+    if mx > buttons.attach.x and mx < buttons.attach.x + buttons.attach.w and
+       my > buttons.attach.y and my < buttons.attach.y + buttons.attach.h then
+        STATE.velocityState = "Attaching"
+        STATE.statusText = "Status: Attaching..."
+        logConsole("Attempting to attach to target process...")
+
+        -- Simulate attach delay
+        love.timer.after(1.2, function()
+            STATE.velocityState = "Attached"
+            STATE.statusText = "Status: Attached"
+            logConsole("Successfully attached to Velocity target", "success")
+        end)
+    end
+
+    -- Execute button
+    if mx > buttons.execute.x and mx < buttons.execute.x + buttons.execute.w and
+       my > buttons.execute.y and my < buttons.execute.y + buttons.execute.h then
+        sendToVelocity(getActiveEditor())
+    end
+end
+
+function love.resize(w, h)
+    WINDOW_W, WINDOW_H = w, h
+end
+
+-- Initial log
+logConsole("Velocity Neon Executor initialized", "success")
+logConsole("Ready. Press ⚡ ATTACH to begin.", "info")
